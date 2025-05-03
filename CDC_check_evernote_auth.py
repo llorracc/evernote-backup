@@ -296,64 +296,285 @@ class EvernoteAuthChecker:
         return results
 
     def check_keychain(self) -> Dict:
-        """Check MacOS keychain for Evernote credentials."""
+        """Check all MacOS keychains for Evernote credentials."""
         results = {
             'found': False,
             'items': []
         }
         
         try:
-            # Try with sudo first for system keychain
-            result = run_with_sudo(["security", "find-internet-password", "-g", "-s", "evernote.com"])
+            # Get list of all keychains
+            keychain_list_cmd = ["security", "list-keychains"]
+            keychain_result = run_with_sudo(keychain_list_cmd)
             
-            if result.returncode == 0:
-                results['found'] = True
-                results['items'].append({
-                    'type': 'internet_password (system)',
-                    'details': result.stdout
-                })
+            if keychain_result.returncode != 0:
+                print(f"Error listing keychains: {keychain_result.stderr}")
+                return results
             
-            # Then check user keychain
-            result = subprocess.run(
-                ["security", "find-internet-password", "-g", "-s", "evernote.com"],
-                capture_output=True,
-                text=True
-            )
+            keychains = [k.strip().strip('"') for k in keychain_result.stdout.splitlines()]
             
-            if result.returncode == 0:
-                results['found'] = True
-                results['items'].append({
-                    'type': 'internet_password (user)',
-                    'details': result.stdout
-                })
+            # Check each keychain
+            for keychain in keychains:
+                # Check internet passwords
+                internet_cmd = ["security", "find-internet-password", "-g", "-s", "evernote.com", "-k", keychain]
+                internet_result = run_with_sudo(internet_cmd)
                 
-            # Check system keychain for generic passwords
-            result = run_with_sudo(["security", "find-generic-password", "-g", "-s", "Evernote"])
-            
-            if result.returncode == 0:
-                results['found'] = True
-                results['items'].append({
-                    'type': 'generic_password (system)',
-                    'details': result.stdout
-                })
+                if internet_result.returncode == 0:
+                    results['found'] = True
+                    results['items'].append({
+                        'type': 'internet_password',
+                        'keychain': keychain,
+                        'details': internet_result.stdout
+                    })
                 
-            # Check user keychain for generic passwords
-            result = subprocess.run(
-                ["security", "find-generic-password", "-g", "-s", "Evernote"],
-                capture_output=True,
-                text=True
-            )
+                # Check generic passwords
+                generic_cmd = ["security", "find-generic-password", "-g", "-s", "Evernote", "-k", keychain]
+                generic_result = run_with_sudo(generic_cmd)
+                
+                if generic_result.returncode == 0:
+                    results['found'] = True
+                    results['items'].append({
+                        'type': 'generic_password',
+                        'keychain': keychain,
+                        'details': generic_result.stdout
+                    })
             
-            if result.returncode == 0:
-                results['found'] = True
-                results['items'].append({
-                    'type': 'generic_password (user)',
-                    'details': result.stdout
-                })
+            # Check system keychain domains
+            system_domains = [
+                "System.keychain",
+                "/Library/Keychains/System.keychain",
+                "/System/Library/Keychains/System.keychain"
+            ]
+            
+            for domain in system_domains:
+                if os.path.exists(domain):
+                    # Check internet passwords
+                    internet_cmd = ["security", "find-internet-password", "-g", "-s", "evernote.com", "-k", domain]
+                    internet_result = run_with_sudo(internet_cmd)
+                    
+                    if internet_result.returncode == 0:
+                        results['found'] = True
+                        results['items'].append({
+                            'type': 'internet_password',
+                            'keychain': domain,
+                            'details': internet_result.stdout
+                        })
+                    
+                    # Check generic passwords
+                    generic_cmd = ["security", "find-generic-password", "-g", "-s", "Evernote", "-k", domain]
+                    generic_result = run_with_sudo(generic_cmd)
+                    
+                    if generic_result.returncode == 0:
+                        results['found'] = True
+                        results['items'].append({
+                            'type': 'generic_password',
+                            'keychain': domain,
+                            'details': generic_result.stdout
+                        })
+            
+            # Check iCloud keychain if available
+            icloud_keychain = os.path.expanduser("~/Library/Keychains/iCloud.keychain-db")
+            if os.path.exists(icloud_keychain):
+                # Check internet passwords
+                internet_cmd = ["security", "find-internet-password", "-g", "-s", "evernote.com", "-k", icloud_keychain]
+                internet_result = run_with_sudo(internet_cmd)
+                
+                if internet_result.returncode == 0:
+                    results['found'] = True
+                    results['items'].append({
+                        'type': 'internet_password',
+                        'keychain': icloud_keychain,
+                        'details': internet_result.stdout
+                    })
+                
+                # Check generic passwords
+                generic_cmd = ["security", "find-generic-password", "-g", "-s", "Evernote", "-k", icloud_keychain]
+                generic_result = run_with_sudo(generic_cmd)
+                
+                if generic_result.returncode == 0:
+                    results['found'] = True
+                    results['items'].append({
+                        'type': 'generic_password',
+                        'keychain': icloud_keychain,
+                        'details': generic_result.stdout
+                    })
                 
         except Exception as e:
             print(f"Error checking keychain: {e}")
             
+        return results
+
+    def check_preferences_files(self) -> List[Tuple[Path, Dict]]:
+        """Check preference files for authentication tokens."""
+        results = []
+        if not check_directory_exists_with_sudo(self.evernote_dir):
+            return results
+        
+        pref_dir = self.evernote_dir / "Preferences"
+        if not check_directory_exists_with_sudo(pref_dir):
+            return results
+        
+        pref_files = [
+            "com.evernote.Evernote.plist",
+            "com.evernote.EvernoteHelper.plist",
+            "com.evernote.Evernote.helper.plist"
+        ]
+        
+        for pref_file in pref_files:
+            file_path = pref_dir / pref_file
+            try:
+                content = read_file_with_sudo(file_path)
+                if not content:
+                    continue
+                    
+                # Check for binary plist patterns
+                token_patterns = [
+                    r'[A-Za-z0-9+/]{32,}={0,2}',  # Base64-like strings
+                    r'[A-Za-z0-9]{32,}',           # Long alphanumeric strings
+                    r'[A-Za-z0-9]{8}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{12}'  # UUID pattern
+                ]
+                
+                potential_tokens = []
+                for pattern in token_patterns:
+                    matches = re.findall(pattern.encode(), content)
+                    potential_tokens.extend(m.decode() for m in matches)
+                
+                if potential_tokens:
+                    size_result = run_with_sudo(["stat", "-f", "%z", str(file_path)])
+                    file_size = int(size_result.stdout.strip()) if size_result.returncode == 0 else 0
+                    
+                    results.append((file_path, {
+                        'potential_tokens': potential_tokens,
+                        'file_size': file_size
+                    }))
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
+            
+        return results
+
+    def check_database_files(self) -> List[Tuple[Path, Dict]]:
+        """Check various database files for authentication information."""
+        results = []
+        if not check_directory_exists_with_sudo(self.evernote_dir):
+            return results
+        
+        db_files = [
+            "UserStore.sqlite",
+            "NoteStore.sqlite",
+            "SyncStore.sqlite",
+            "Cache.db",
+            "Cache.sqlite"
+        ]
+        
+        for db_file in db_files:
+            db_path = self.evernote_dir / db_file
+            if not check_directory_exists_with_sudo(db_path):
+                continue
+            
+            try:
+                # Try to copy the database file to a temporary location with sudo
+                temp_db = Path("/tmp/temp_db.sqlite")
+                copy_cmd = ["cp", str(db_path), str(temp_db)]
+                copy_result = run_with_sudo(copy_cmd)
+                
+                if copy_result.returncode != 0:
+                    continue
+                
+                # Change permissions to allow reading
+                chmod_cmd = ["chmod", "644", str(temp_db)]
+                chmod_result = run_with_sudo(chmod_cmd)
+                
+                if chmod_result.returncode != 0:
+                    continue
+                
+                try:
+                    conn = sqlite3.connect(str(temp_db))
+                    cursor = conn.cursor()
+                    
+                    # Check for auth-related tables
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                    tables = [row[0] for row in cursor.fetchall()]
+                    
+                    auth_related_tables = []
+                    for table in tables:
+                        if any(keyword in table.lower() for keyword in ['auth', 'token', 'session', 'user']):
+                            cursor.execute(f"SELECT COUNT(*) FROM {table};")
+                            count = cursor.fetchone()[0]
+                            auth_related_tables.append({
+                                'name': table,
+                                'row_count': count
+                            })
+                        
+                    if auth_related_tables:
+                        size_result = run_with_sudo(["stat", "-f", "%z", str(db_path)])
+                        file_size = int(size_result.stdout.strip()) if size_result.returncode == 0 else 0
+                        
+                        results.append((db_path, {
+                            'auth_tables': auth_related_tables,
+                            'file_size': file_size
+                        }))
+                    
+                    conn.close()
+                finally:
+                    # Clean up temporary file
+                    os.remove(str(temp_db))
+                
+            except Exception as e:
+                print(f"Error reading {db_path}: {e}")
+            
+        return results
+
+    def check_webkit_files(self) -> List[Tuple[Path, Dict]]:
+        """Check WebKit storage files for authentication information."""
+        results = []
+        webkit_dir = self.evernote_dir / "WebKit"
+        if not check_directory_exists_with_sudo(webkit_dir):
+            return results
+        
+        try:
+            # Find all WebKit storage files
+            find_cmd = ["find", str(webkit_dir), "-type", "f", "(", 
+                       "-name", "*.localstorage", "-o",
+                       "-name", "*.sqlite", "-o",
+                       "-name", "*.db", ")",
+                       "-not", "-name", "*.lock"]
+            result = run_with_sudo(find_cmd)
+            
+            if result.returncode != 0:
+                return results
+            
+            for file_path in [Path(f.strip()) for f in result.stdout.splitlines()]:
+                try:
+                    content = read_file_with_sudo(file_path)
+                    if not content:
+                        continue
+                        
+                    # Check for token patterns
+                    token_patterns = [
+                        r'[A-Za-z0-9+/]{32,}={0,2}',
+                        r'[A-Za-z0-9]{32,}',
+                        r'[A-Za-z0-9]{8}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{12}'
+                    ]
+                    
+                    potential_tokens = []
+                    for pattern in token_patterns:
+                        matches = re.findall(pattern.encode(), content)
+                        potential_tokens.extend(m.decode() for m in matches)
+                        
+                    if potential_tokens:
+                        size_result = run_with_sudo(["stat", "-f", "%z", str(file_path)])
+                        file_size = int(size_result.stdout.strip()) if size_result.returncode == 0 else 0
+                        
+                        results.append((file_path, {
+                            'potential_tokens': potential_tokens,
+                            'file_size': file_size
+                        }))
+                except Exception as e:
+                    print(f"Error processing {file_path}: {e}")
+                
+        except Exception as e:
+            print(f"Error in check_webkit_files: {e}")
+        
         return results
 
     def analyze(self) -> Dict:
@@ -425,19 +646,17 @@ def format_keychain_results(results: Dict) -> str:
     output = []
     
     if not results['found']:
-        output.append("No Evernote credentials found in keychain.")
+        output.append("No Evernote credentials found in any keychain.")
         return "\n".join(output)
         
-    output.append("Found Evernote credentials in keychain:")
+    output.append("Found Evernote credentials in keychains:")
     for item in results['items']:
         # Extract just the keychain path and account
         details = item['details']
-        keychain = re.search(r'keychain: "([^"]+)"', details)
         account = re.search(r'"acct"<blob>="([^"]+)"', details)
         
-        if keychain and account:
-            output.append(f"\n{item['type']}:")
-            output.append(f"  Keychain: {keychain.group(1)}")
+        if account:
+            output.append(f"\n{item['type']} in {item['keychain']}:")
             output.append(f"  Account: {account.group(1)}")
                 
     return "\n".join(output)
