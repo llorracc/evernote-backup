@@ -17,6 +17,62 @@ def run_with_sudo(cmd: List[str]) -> subprocess.CompletedProcess:
         sudo_cmd = ["sudo"] + cmd
         return subprocess.run(sudo_cmd, capture_output=True, text=True)
 
+def read_file_with_sudo(file_path: Path) -> Optional[bytes]:
+    """Read a file with sudo if regular access fails."""
+    try:
+        # First try regular access
+        with open(file_path, 'rb') as f:
+            return f.read()
+    except (PermissionError, FileNotFoundError):
+        try:
+            # If permission denied or file not found, try with sudo
+            result = run_with_sudo(["cat", str(file_path)])
+            if result.returncode == 0:
+                return result.stdout.encode()
+            return None
+        except Exception as e:
+            print(f"Error reading file with sudo: {e}")
+            return None
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return None
+
+def check_directory_exists_with_sudo(dir_path: Path) -> bool:
+    """Check if a directory exists with sudo."""
+    try:
+        # First try regular access
+        return dir_path.exists()
+    except PermissionError:
+        try:
+            # If permission denied, try with sudo
+            result = run_with_sudo(["test", "-d", str(dir_path)])
+            return result.returncode == 0
+        except Exception as e:
+            print(f"Error checking directory with sudo: {e}")
+            return False
+    except Exception as e:
+        print(f"Error checking directory: {e}")
+        return False
+
+def list_directory_with_sudo(dir_path: Path) -> List[Path]:
+    """List directory contents with sudo."""
+    try:
+        # First try regular access
+        return list(dir_path.iterdir())
+    except (PermissionError, FileNotFoundError):
+        try:
+            # If permission denied or directory not found, try with sudo
+            result = run_with_sudo(["ls", "-1", str(dir_path)])
+            if result.returncode == 0:
+                return [dir_path / line.strip() for line in result.stdout.splitlines()]
+            return []
+        except Exception as e:
+            print(f"Error listing directory with sudo: {e}")
+            return []
+    except Exception as e:
+        print(f"Error listing directory: {e}")
+        return []
+
 class EvernoteAuthChecker:
     def __init__(self, evernote_dir: Optional[Path] = None):
         self.evernote_dir = evernote_dir
@@ -50,30 +106,10 @@ class EvernoteAuthChecker:
             print(f"Error running mdfind: {e}")
             return []
 
-    def read_file_with_sudo(self, file_path: Path) -> Optional[bytes]:
-        """Read a file with sudo if regular access fails."""
-        try:
-            # First try regular access
-            with open(file_path, 'rb') as f:
-                return f.read()
-        except PermissionError:
-            try:
-                # If permission denied, try with sudo
-                result = run_with_sudo(["cat", str(file_path)])
-                if result.returncode == 0:
-                    return result.stdout.encode()
-                return None
-            except Exception as e:
-                print(f"Error reading file with sudo: {e}")
-                return None
-        except Exception as e:
-            print(f"Error reading file: {e}")
-            return None
-
     def check_props_files(self) -> List[Tuple[Path, Dict]]:
         """Check props files for authentication tokens."""
         results = []
-        if not self.accounts_dir.exists():
+        if not check_directory_exists_with_sudo(self.accounts_dir):
             return results
             
         try:
@@ -89,7 +125,7 @@ class EvernoteAuthChecker:
             
             for props_file in props_files:
                 try:
-                    content = self.read_file_with_sudo(props_file)
+                    content = read_file_with_sudo(props_file)
                     if not content:
                         continue
                         
@@ -106,9 +142,13 @@ class EvernoteAuthChecker:
                         potential_tokens.extend(m.decode() for m in matches)
                     
                     if potential_tokens:
+                        # Get file size with sudo
+                        size_result = run_with_sudo(["stat", "-f", "%z", str(props_file)])
+                        file_size = int(size_result.stdout.strip()) if size_result.returncode == 0 else 0
+                        
                         results.append((props_file, {
                             'potential_tokens': potential_tokens,
-                            'file_size': len(content)
+                            'file_size': file_size
                         }))
                 except Exception as e:
                     print(f"Error processing {props_file}: {e}")
@@ -123,7 +163,7 @@ class EvernoteAuthChecker:
         results = []
         local_store = self.accounts_dir / "localNoteStore" / "LocalNoteStore.sqlite"
         
-        if not local_store.exists():
+        if not check_directory_exists_with_sudo(local_store.parent):
             return results
             
         try:
@@ -163,9 +203,13 @@ class EvernoteAuthChecker:
                         })
                         
                 if auth_related_tables:
+                    # Get file size with sudo
+                    size_result = run_with_sudo(["stat", "-f", "%z", str(local_store)])
+                    file_size = int(size_result.stdout.strip()) if size_result.returncode == 0 else 0
+                    
                     results.append((local_store, {
                         'auth_tables': auth_related_tables,
-                        'file_size': os.path.getsize(str(temp_db))
+                        'file_size': file_size
                     }))
                     
                 conn.close()
@@ -181,7 +225,7 @@ class EvernoteAuthChecker:
     def check_bootstrap(self) -> List[Tuple[Path, Dict]]:
         """Check bootstrap directory for auth-related files."""
         results = []
-        if not self.bootstrap_dir.exists():
+        if not check_directory_exists_with_sudo(self.bootstrap_dir):
             return results
             
         # Look for files that might contain auth info
@@ -202,7 +246,7 @@ class EvernoteAuthChecker:
                     
                 for file in [Path(f.strip()) for f in result.stdout.splitlines()]:
                     try:
-                        content = self.read_file_with_sudo(file)
+                        content = read_file_with_sudo(file)
                         if not content:
                             continue
                             
@@ -211,10 +255,14 @@ class EvernoteAuthChecker:
                             json_content = json.loads(content)
                             if any(keyword in str(json_content).lower() 
                                   for keyword in ['auth', 'token', 'session', 'user']):
+                                # Get file size with sudo
+                                size_result = run_with_sudo(["stat", "-f", "%z", str(file)])
+                                file_size = int(size_result.stdout.strip()) if size_result.returncode == 0 else 0
+                                
                                 results.append((file, {
                                     'type': 'json',
                                     'content': json_content,
-                                    'file_size': len(content)
+                                    'file_size': file_size
                                 }))
                         except json.JSONDecodeError:
                             # Not JSON, check for binary patterns
@@ -230,10 +278,14 @@ class EvernoteAuthChecker:
                                 potential_tokens.extend(m.decode() for m in matches)
                                 
                             if potential_tokens:
+                                # Get file size with sudo
+                                size_result = run_with_sudo(["stat", "-f", "%z", str(file)])
+                                file_size = int(size_result.stdout.strip()) if size_result.returncode == 0 else 0
+                                
                                 results.append((file, {
                                     'type': 'binary',
                                     'potential_tokens': potential_tokens,
-                                    'file_size': len(content)
+                                    'file_size': file_size
                                 }))
                     except Exception as e:
                         print(f"Error reading {file}: {e}")

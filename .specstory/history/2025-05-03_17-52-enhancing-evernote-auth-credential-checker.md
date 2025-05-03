@@ -1275,3 +1275,264 @@ Let me know what improvements you'd like to see!
 
 ---
 
+_**User**_
+
+Modify the script to show many fewer aspects of the keychain entry: just the keychain itself, and the "acct" 
+
+Also add a summary at the end
+
+---
+
+_**Assistant**_
+
+I'll modify the script to simplify the keychain output and add a summary section:
+
+---
+
+```diff
+      output.append("Found Evernote credentials in keychain:")
+      for item in results['items']:
++         # Extract just the keychain path and account
++         details = item['details']
++         keychain = re.search(r'keychain: "([^"]+)"', details)
++         account = re.search(r'"acct"<blob>="([^"]+)"', details)
++         
++         if keychain and account:
+              output.append(f"\n{item['type']}:")
+-         # Parse and format the keychain output
+-         lines = item['details'].split('\n')
+-         for line in lines:
+-             if line.strip():
+-                 output.append(f"  {line.strip()}")
++             output.append(f"  Keychain: {keychain.group(1)}")
++             output.append(f"  Account: {account.group(1)}")
++                 
++     return "\n".join(output)
++ 
++ def generate_summary(evernote_dirs: List[Path], all_results: List[Tuple[Path, Dict]], keychain_results: Dict) -> str:
++     """Generate a summary of all findings."""
++     output = []
++     output.append("\nSUMMARY")
++     output.append("=======")
++     
++     # Summarize directories by user
++     users = {}
++     for dir_path in evernote_dirs:
++         user = dir_path.parts[2]  # /Users/username/...
++         if user not in users:
++             users[user] = []
++         users[user].append(dir_path)
++     
++     output.append(f"\nFound {len(evernote_dirs)} Evernote directories across {len(users)} users:")
++     for user, dirs in users.items():
++         output.append(f"\n{user}:")
++         for dir_path in dirs:
++             output.append(f"  {dir_path}")
++     
++     # Summarize auth findings
++     auth_found = []
++     for dir_path, results in all_results:
++         if results['has_potential_auth']:
++             auth_found.append(dir_path)
++     
++     if auth_found:
++         output.append("\nPotential authentication tokens found in:")
++         for dir_path in auth_found:
++             output.append(f"  {dir_path}")
++     else:
++         output.append("\nNo authentication tokens found in filesystem.")
++     
++     # Summarize keychain findings
++     if keychain_results['found']:
++         output.append("\nKeychain entries found:")
++         for item in keychain_results['items']:
++             details = item['details']
++             account = re.search(r'"acct"<blob>="([^"]+)"', details)
++             if account:
++                 output.append(f"  {item['type']}: {account.group(1)}")
++     else:
++         output.append("\nNo keychain entries found.")
+      
+      return "\n".join(output)
+```
+
+```diff
+      keychain_results = checker.check_keychain()
+      print(format_keychain_results(keychain_results))
++     
++     # Print summary
++     print(generate_summary(evernote_dirs, all_results, keychain_results))
+  
+  if __name__ == "__main__":
+```
+
+---
+
+I've made two main changes:
+
+1. Simplified the keychain output to only show:
+   - The keychain path
+   - The account name
+
+2. Added a comprehensive summary section that shows:
+   - Total number of Evernote directories found
+   - Breakdown by user
+   - List of locations where auth tokens were found (if any)
+   - Simplified keychain entries found
+
+Let's run it to see the improved output:
+
+---
+
+```bash
+sudo python CDC_check_evernote_auth.py
+```
+
+```
+ccarroll@ccarroll evernote-backup % sudo python CDC_check_evernote_auth.py
+
+Found 15 Evernote directories:
+  /Volumes/Ext/Users/ccarroll/Library-Spotlighted/Application Support/com.evernote.Evernote
+  /Users/ccarroll/Library/CoreData/com.evernote.Evernote
+  /Users/ccarroll/Library/Application Support/com.evernote.Evernote
+  /Users/ccarroll/Library/CloudStorage/GoogleDrive-united@llorracc.org/My Drive/Volumes/Ext/Users/ccarroll/L
+ibrary-Spotlighted/Application Support/com.evernote.Evernote
+  /Users/ccarroll/Library/WebKit/com.evernote.Evernote
+  /Users/ccarroll/Library/WebKit/Databases/___IndexedDB/com.evernote.Evernote
+  /Users/bcarroll/Library/Application Support/com.evernote.Evernote
+  /Users/cdcjem/Library/Application Support/com.evernote.Evernote
+  /Users/cdcjem/Library/WebKit/com.evernote.Evernote
+  /Users/common/Library/Application Support/com.evernote.Evernote
+  /Users/common/Library/WebKit/com.evernote.Evernote
+  /Users/bcarroll/Library/CoreData/com.evernote.Evernote
+  /Users/common/Library/CoreData/com.evernote.Evernote
+  /Users/ccmd/Library/Application Support/com.evernote.Evernote
+  /Users/cdcjem/Library/CoreData/com.evernote.Evernote
+
+Checking directory: /Volumes/Ext/Users/ccarroll/Library-Spotlighted/Application Support/com.evernote.Evernot
+e
+No potential authentication tokens found in /Volumes/Ext/Users/ccarroll/Library-Spotlighted/Application Supp
+ort/com.evernote.Evernote.
+
+Checking directory: /Users/ccarroll/Library/CoreData/com.evernote.Evernote
+No potential authentication tokens found in /Users/ccarroll/Library/CoreData/com.evernote.Evernote.
+
+Checking directory: /Users/ccarroll/Library/Application Support/com.evernote.Evernote
+No potential authentication tokens found in /Users/ccarroll/Library/Application Support/com.evernote.Evernot
+e.
+
+Checking directory: /Users/ccarroll/Library/CloudStorage/GoogleDrive-united@llorracc.org/My Drive/Volumes/Ex
+t/Users/ccarroll/Library-Spotlighted/Application Support/com.evernote.Evernote
+No potential authentication tokens found in /Users/ccarroll/Library/CloudStorage/GoogleDrive-united@llorracc
+.org/My Drive/Volumes/Ext/Users/ccarroll/Library-Spotlighted/Application Support/com.evernote.Evernote.
+
+Checking directory: /Users/ccarroll/Library/WebKit/com.evernote.Evernote
+No potential authentication tokens found in /Users/ccarroll/Library/WebKit/com.evernote.Evernote.
+
+Checking directory: /Users/ccarroll/Library/WebKit/Databases/___IndexedDB/com.evernote.Evernote
+No potential authentication tokens found in /Users/ccarroll/Library/WebKit/Databases/___IndexedDB/com.everno
+te.Evernote.
+
+Checking directory: /Users/bcarroll/Library/Application Support/com.evernote.Evernote
+No potential authentication tokens found in /Users/bcarroll/Library/Application Support/com.evernote.Evernot
+e.
+
+Checking directory: /Users/cdcjem/Library/Application Support/com.evernote.Evernote
+No potential authentication tokens found in /Users/cdcjem/Library/Application Support/com.evernote.Evernote.
+
+Checking directory: /Users/cdcjem/Library/WebKit/com.evernote.Evernote
+No potential authentication tokens found in /Users/cdcjem/Library/WebKit/com.evernote.Evernote.
+
+Checking directory: /Users/common/Library/Application Support/com.evernote.Evernote
+No potential authentication tokens found in /Users/common/Library/Application Support/com.evernote.Evernote.
+
+Checking directory: /Users/common/Library/WebKit/com.evernote.Evernote
+No potential authentication tokens found in /Users/common/Library/WebKit/com.evernote.Evernote.
+
+Checking directory: /Users/bcarroll/Library/CoreData/com.evernote.Evernote
+No potential authentication tokens found in /Users/bcarroll/Library/CoreData/com.evernote.Evernote.
+
+Checking directory: /Users/common/Library/CoreData/com.evernote.Evernote
+No potential authentication tokens found in /Users/common/Library/CoreData/com.evernote.Evernote.
+
+Checking directory: /Users/ccmd/Library/Application Support/com.evernote.Evernote
+No potential authentication tokens found in /Users/ccmd/Library/Application Support/com.evernote.Evernote.
+
+Checking directory: /Users/cdcjem/Library/CoreData/com.evernote.Evernote
+No potential authentication tokens found in /Users/cdcjem/Library/CoreData/com.evernote.Evernote.
+
+Checking MacOS keychain for Evernote credentials...
+Found Evernote credentials in keychain:
+
+generic_password (system):
+  Keychain: /Users/ccarroll/Library/Keychains/login.keychain-db
+  Account: llorracc-evernote-test/Evernote
+
+generic_password (user):
+  Keychain: /Users/ccarroll/Library/Keychains/login.keychain-db
+  Account: llorracc-evernote-test/Evernote
+
+SUMMARY
+=======
+
+Found 15 Evernote directories across 6 users:
+
+Ext:
+  /Volumes/Ext/Users/ccarroll/Library-Spotlighted/Application Support/com.evernote.Evernote
+
+ccarroll:
+  /Users/ccarroll/Library/CoreData/com.evernote.Evernote
+  /Users/ccarroll/Library/Application Support/com.evernote.Evernote
+  /Users/ccarroll/Library/CloudStorage/GoogleDrive-united@llorracc.org/My Drive/Volumes/Ext/Users/ccarroll/L
+ibrary-Spotlighted/Application Support/com.evernote.Evernote
+  /Users/ccarroll/Library/WebKit/com.evernote.Evernote
+  /Users/ccarroll/Library/WebKit/Databases/___IndexedDB/com.evernote.Evernote
+
+bcarroll:
+  /Users/bcarroll/Library/Application Support/com.evernote.Evernote
+  /Users/bcarroll/Library/CoreData/com.evernote.Evernote
+
+cdcjem:
+  /Users/cdcjem/Library/Application Support/com.evernote.Evernote
+  /Users/cdcjem/Library/WebKit/com.evernote.Evernote
+  /Users/cdcjem/Library/CoreData/com.evernote.Evernote
+
+common:
+  /Users/common/Library/Application Support/com.evernote.Evernote
+  /Users/common/Library/WebKit/com.evernote.Evernote
+  /Users/common/Library/CoreData/com.evernote.Evernote
+
+ccmd:
+  /Users/ccmd/Library/Application Support/com.evernote.Evernote
+
+No authentication tokens found in filesystem.
+
+Keychain entries found:
+  generic_password (system): llorracc-evernote-test/Evernote
+  generic_password (user): llorracc-evernote-test/Evernote
+ccarroll@ccarroll evernote-backup %
+```
+
+---
+
+The output is now much cleaner and more informative! The summary section at the end provides a clear overview:
+
+1. Found 15 Evernote directories across 6 users:
+   - Ext (1 directory)
+   - ccarroll (5 directories)
+   - bcarroll (2 directories)
+   - cdcjem (3 directories)
+   - common (3 directories)
+   - ccmd (1 directory)
+
+2. No authentication tokens were found in the filesystem
+
+3. Found keychain entries:
+   - Both system and user keychain entries for "llorracc-evernote-test/Evernote"
+
+The keychain output is now much more concise, showing only the essential information about where the credentials are stored and what account they're for.
+
+Would you like me to make any adjustments to the format or add any additional information to the summary?
+
+---
+
